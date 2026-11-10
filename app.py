@@ -5,7 +5,9 @@ Execute com:  streamlit run app.py
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
+import fazenda
 import fuzzy_irrigacao as fz
 
 st.set_page_config(page_title="Irrigação fuzzy", page_icon="💧", layout="wide")
@@ -143,142 +145,170 @@ tempo, vazao = res["saida"]["tempo"], res["saida"]["vazao"]
 dom = {v: max(res["mu"][v], key=res["mu"][v].get) for v in fz.ENTRADAS}
 ativas = sorted([d for d in res["disparos"] if d["forca"] > 1e-9], key=lambda d: -d["forca"])
 
-# ------------------------------------------------------------------ cabeçalho
-st.markdown("""
-<div class="cabeca">
-  <h1>Irrigação fuzzy</h1>
-  <p>Mova as leituras dos sensores e veja como o controlador decide quanto tempo regar e com que vazão.</p>
-</div>""", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------ faixa do céu
-luz = res["entradas"]["sol"]
-pos = luz / 10  # 0..100 %
-txt_luz = {"escuro": "noite", "nublado": "nublado", "ensolarado": "sol forte"}[dom["sol"]]
-if pos > 70:
-    estilo_rotulo = f"left:calc({pos}% - 12px); transform:translate(-100%,-50%)"
-else:
-    estilo_rotulo = f"left:calc({pos}% + 12px); transform:translate(0,-50%)"
-st.markdown(f"""
-<div class="ceu" role="img" aria-label="Luminosidade atual: {int(luz)} de 1000, {txt_luz}">
-  <div class="marca" style="left:{pos}%"></div>
-  <div class="rotulo" style="{estilo_rotulo}">{txt_luz}, LDR {int(luz)}</div>
-</div>
-<div class="escala"><span>noite</span><span>nublado</span><span>sol pleno</span></div>
-""", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ decisão
-if tempo["valor"] == 0:
-    frase = (f"Solo {NOMES[dom['umidade']]} e {txt_luz}: as regras indicam não irrigar agora.")
-    classe = "explica parado"
-else:
-    regra_txt = ativas[0]["texto"].split("  [")[0]
-    frase = f"Solo {NOMES[dom['umidade']]}, clima {NOMES[dom['temperatura']]} e {txt_luz}. Regra mais forte, {ativas[0]['id']}: {regra_txt[0].lower() + regra_txt[1:]}"
-    classe = "explica"
-st.markdown(f"""
-<div class="decisao">
-  <div><div class="numero">{br(tempo['valor'])}<small>min</small></div><div class="legenda">tempo de rega</div></div>
-  <div><div class="numero">{vazao['valor']:.0f}<small>%</small></div><div class="legenda">da vazão da bomba</div></div>
-  <div class="{classe}">{frase}</div>
-</div>""", unsafe_allow_html=True)
+@st.cache_data(show_spinner="Simulando o dia…")
+def dia_simulado(u0):
+    return fazenda.simular_dia(u0)
 
 
-# ------------------------------------------------------------------ gráficos
-def base_fig(altura=260):
-    fig = go.Figure()
-    fig.update_layout(
-        height=altura, margin=dict(l=10, r=10, t=36, b=10), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Atkinson Hyperlegible, sans-serif", color=MUSGO, size=13),
-        showlegend=False, separators=",.",
-    )
-    fig.update_xaxes(showgrid=False, linecolor=LINHA, ticks="outside", tickcolor=LINHA, zeroline=False)
-    fig.update_yaxes(range=[0, 1.32], gridcolor="#DCE4E5", zeroline=False, tickvals=[0, .5, 1])
-    return fig
+def pagina_fazenda():
+    st.markdown("""
+    <div class="cabeca">
+      <h1>Fazenda</h1>
+      <p>A cena segue as leituras da barra lateral. Use "Simular um dia" para ver 24 horas passarem,
+      começando com a umidade escolhida no controle.</p>
+    </div>""", unsafe_allow_html=True)
+    st.write("")
+    agora = dict(u=res["entradas"]["umidade"], t=res["entradas"]["temperatura"], s=res["entradas"]["sol"],
+                 tempo=round(tempo["valor"], 1), vazao=round(vazao["valor"], 1))
+    components.html(fazenda.html_cena(agora, dia_simulado(st.session_state["umidade"])), height=900, scrolling=False)
 
 
-CONFIG = {"displayModeBar": False}
-aba1, aba2, aba3, aba4 = st.tabs(["1. Leitura dos sensores", "2. Regras disparadas", "3. Decisão final", "Superfície de decisão"])
+def pagina_controlador():
+    # ------------------------------------------------------------------ cabeçalho
+    st.markdown("""
+    <div class="cabeca">
+      <h1>Irrigação fuzzy</h1>
+      <p>Mova as leituras dos sensores e veja como o controlador decide quanto tempo regar e com que vazão.</p>
+    </div>""", unsafe_allow_html=True)
 
-with aba1:
-    st.markdown('<p class="nota">Cada leitura vira um grau de pertinência entre 0 e 1 em cada termo. '
-                'A linha vertical é o valor atual; a área preenchida mostra o quanto ele pertence a cada termo.</p>',
-                unsafe_allow_html=True)
-    cols = st.columns(3)
-    for col, var in zip(cols, fz.ENTRADAS):
-        x = fz.UNIVERSOS[var]; v = res["entradas"][var]
-        fig = base_fig()
-        for i, t in enumerate(fz.TERMOS[var]):
-            cor = CORES_TERMOS[i]; y = fz.curva(var, t); g = res["mu"][var][t]
-            if g > 0:
-                fig.add_trace(go.Scatter(x=x, y=np.minimum(y, g), fill="tozeroy", mode="none",
-                                         fillcolor=rgba(cor, .22), hoverinfo="skip"))
-            fig.add_trace(go.Scatter(x=x, y=y, mode="lines", line=dict(color=cor, width=2.4), name=NOMES[t],
-                                     hovertemplate=f"{NOMES[t]}: %{{y:.2f}}<extra></extra>"))
-        fig.add_vline(x=v, line=dict(color=MUSGO, width=1.6, dash="dot"))
-        nomear_termos(fig, var, CORES_TERMOS)
-        fig.update_xaxes(tickvals=np.arange(x[0], x[-1] + 1e-9, DTICK[var]), range=[x[0], x[-1] * 1.01])
-        fig.update_layout(title=dict(text=ROTULOS[var], font=dict(family=FONTE_TITULO, size=17), x=0, y=.97))
-        col.plotly_chart(fig, width="stretch", config=CONFIG)
-        graus = [f"<b>{br(g, 2)}</b> {NOMES[t]}" for t, g in res["mu"][var].items() if g > 0]
-        col.markdown(f'<p class="nota">{br(v, 0)} {UNIDADES[var]}: ' + ", ".join(graus) + "</p>", unsafe_allow_html=True)
+    # ------------------------------------------------------------------ faixa do céu
+    luz = res["entradas"]["sol"]
+    pos = luz / 10  # 0..100 %
+    txt_luz = {"escuro": "noite", "nublado": "nublado", "ensolarado": "sol forte"}[dom["sol"]]
+    if pos > 70:
+        estilo_rotulo = f"left:calc({pos}% - 12px); transform:translate(-100%,-50%)"
+    else:
+        estilo_rotulo = f"left:calc({pos}% + 12px); transform:translate(0,-50%)"
+    st.markdown(f"""
+    <div class="ceu" role="img" aria-label="Luminosidade atual: {int(luz)} de 1000, {txt_luz}">
+      <div class="marca" style="left:{pos}%"></div>
+      <div class="rotulo" style="{estilo_rotulo}">{txt_luz}, LDR {int(luz)}</div>
+    </div>
+    <div class="escala"><span>noite</span><span>nublado</span><span>sol pleno</span></div>
+    """, unsafe_allow_html=True)
 
-with aba2:
-    st.markdown('<p class="nota">A força de cada regra vem dos operadores E = mínimo, OU = máximo e NÃO = 1 − μ. '
-                'Regras com força zero não participam da decisão.</p>', unsafe_allow_html=True)
-    linhas = []
-    for d in sorted(res["disparos"], key=lambda d: -d["forca"]):
-        on = d["forca"] > 1e-9
-        texto = d["texto"].split("  [")[0]
-        cons = f"tempo {NOMES[d['cons']['tempo']]}, vazão {NOMES[d['cons']['vazao']]}"
-        linhas.append(f"""<div class="regra{'' if on else ' inativa'}">
-          <div class="id">{d['id']}</div>
-          <div class="txt">{texto}<br><span>{cons}</span></div>
-          <div><div class="barra"><i style="width:{d['forca'] * 100:.0f}%"></i></div><div class="forca">{br(d['forca'], 2)}</div></div>
-        </div>""")
-    st.markdown("".join(linhas), unsafe_allow_html=True)
+    # ------------------------------------------------------------------ decisão
+    if tempo["valor"] == 0:
+        frase = (f"Solo {NOMES[dom['umidade']]} e {txt_luz}: as regras indicam não irrigar agora.")
+        classe = "explica parado"
+    else:
+        regra_txt = ativas[0]["texto"].split("  [")[0]
+        frase = f"Solo {NOMES[dom['umidade']]}, clima {NOMES[dom['temperatura']]} e {txt_luz}. Regra mais forte, {ativas[0]['id']}: {regra_txt[0].lower() + regra_txt[1:]}"
+        classe = "explica"
+    st.markdown(f"""
+    <div class="decisao">
+      <div><div class="numero">{br(tempo['valor'])}<small>min</small></div><div class="legenda">tempo de rega</div></div>
+      <div><div class="numero">{vazao['valor']:.0f}<small>%</small></div><div class="legenda">da vazão da bomba</div></div>
+      <div class="{classe}">{frase}</div>
+    </div>""", unsafe_allow_html=True)
 
-with aba3:
-    st.markdown('<p class="nota">Cada regra corta o termo de saída na altura da sua força. Os cortes são somados pelo máximo, '
-                'e o centroide dessa área é o valor enviado à bomba.</p>', unsafe_allow_html=True)
-    cols = st.columns(2)
-    for col, s in zip(cols, fz.SAIDAS):
-        o = res["saida"][s]; x = fz.UNIVERSOS[s]
-        fig = base_fig(300)
-        for i, t in enumerate(fz.TERMOS[s]):
-            fig.add_trace(go.Scatter(x=x, y=fz.curva(s, t), mode="lines", name=NOMES[t],
-                                     line=dict(color=CORES_TERMOS[i], width=1.3, dash="dot"),
-                                     hovertemplate=f"{NOMES[t]}<extra></extra>"))
-        fig.add_trace(go.Scatter(x=x, y=o["agregado"], fill="tozeroy", mode="lines", name="área agregada",
-                                 line=dict(color=AGUA, width=2), fillcolor=rgba(AGUA, .3),
-                                 hovertemplate="%{y:.2f}<extra></extra>"))
-        fig.add_vline(x=o["centroide"], line=dict(color=ARGILA, width=2.4),
-                      annotation_text=f"centroide {br(o['centroide'])}", annotation_position="bottom right", annotation_y=0.55,
-                      annotation_font=dict(color=ARGILA, size=13))
-        nomear_termos(fig, s, CORES_TERMOS)
-        fig.update_xaxes(tickvals=np.arange(x[0], x[-1] + 1e-9, DTICK[s]), range=[x[0], x[-1] * 1.01])
-        fig.update_layout(title=dict(text=f"{ROTULOS[s]} ({UNIDADES[s]})", font=dict(family=FONTE_TITULO, size=17), x=0, y=.97))
-        col.plotly_chart(fig, width="stretch", config=CONFIG)
-        if o["valor"] == 0 and o["centroide"] > 0:
-            col.markdown(f'<p class="nota">O centroide ({br(o["centroide"])}) fica abaixo da zona morta '
-                         f'({br(fz.ZONA_MORTA[s])} {UNIDADES[s]}), então a bomba não liga.</p>', unsafe_allow_html=True)
 
-with aba4:
-    saida = st.radio("Saída", ["tempo", "vazao"], format_func=lambda s: ROTULOS[s], horizontal=True)
-    st.markdown(f'<p class="nota">Decisão para todas as combinações de umidade e luz, com a temperatura fixa em '
-                f'{st.session_state["temperatura"]} °C. O ponto marca a leitura atual.</p>', unsafe_allow_html=True)
+    # ------------------------------------------------------------------ gráficos
+    def base_fig(altura=260):
+        fig = go.Figure()
+        fig.update_layout(
+            height=altura, margin=dict(l=10, r=10, t=36, b=10), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Atkinson Hyperlegible, sans-serif", color=MUSGO, size=13),
+            showlegend=False, separators=",.",
+        )
+        fig.update_xaxes(showgrid=False, linecolor=LINHA, ticks="outside", tickcolor=LINHA, zeroline=False)
+        fig.update_yaxes(range=[0, 1.32], gridcolor="#DCE4E5", zeroline=False, tickvals=[0, .5, 1])
+        return fig
 
-    @st.cache_data(show_spinner="Calculando a superfície…")
-    def malha(temp, s):
-        us, ss = np.arange(0, 101, 4), np.arange(0, 1001, 40)
-        Z = np.array([[fz.inferir(u, temp, l)["saida"][s]["valor"] for u in us] for l in ss])
-        return us, ss, Z
 
-    us, ss, Z = malha(st.session_state["temperatura"], saida)
-    fig = go.Figure(go.Surface(x=us, y=ss, z=Z, colorscale=[[0, NOITE], [.45, AGUA], [1, SOL]], showscale=False,
-                               hovertemplate="umidade %{x}%<br>LDR %{y}<br>%{z:.1f}<extra></extra>"))
-    fig.add_trace(go.Scatter3d(x=[res["entradas"]["umidade"]], y=[luz], z=[res["saida"][saida]["valor"]],
-                               mode="markers", marker=dict(size=7, color=ARGILA), hoverinfo="skip"))
-    fig.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)",
-                      font=dict(family="Atkinson Hyperlegible, sans-serif", color=MUSGO),
-                      scene=dict(xaxis_title="umidade (%)", yaxis_title="LDR", zaxis_title=f"{ROTULOS[saida]} ({UNIDADES[saida]})",
-                                 camera=dict(eye=dict(x=1.6, y=-1.5, z=0.9))))
-    st.plotly_chart(fig, width="stretch", config=CONFIG)
+    CONFIG = {"displayModeBar": False}
+    aba1, aba2, aba3, aba4 = st.tabs(["1. Leitura dos sensores", "2. Regras disparadas", "3. Decisão final",
+                                      "Superfície de decisão"])
+
+    with aba1:
+        st.markdown('<p class="nota">Cada leitura vira um grau de pertinência entre 0 e 1 em cada termo. '
+                    'A linha vertical é o valor atual; a área preenchida mostra o quanto ele pertence a cada termo.</p>',
+                    unsafe_allow_html=True)
+        cols = st.columns(3)
+        for col, var in zip(cols, fz.ENTRADAS):
+            x = fz.UNIVERSOS[var]; v = res["entradas"][var]
+            fig = base_fig()
+            for i, t in enumerate(fz.TERMOS[var]):
+                cor = CORES_TERMOS[i]; y = fz.curva(var, t); g = res["mu"][var][t]
+                if g > 0:
+                    fig.add_trace(go.Scatter(x=x, y=np.minimum(y, g), fill="tozeroy", mode="none",
+                                             fillcolor=rgba(cor, .22), hoverinfo="skip"))
+                fig.add_trace(go.Scatter(x=x, y=y, mode="lines", line=dict(color=cor, width=2.4), name=NOMES[t],
+                                         hovertemplate=f"{NOMES[t]}: %{{y:.2f}}<extra></extra>"))
+            fig.add_vline(x=v, line=dict(color=MUSGO, width=1.6, dash="dot"))
+            nomear_termos(fig, var, CORES_TERMOS)
+            fig.update_xaxes(tickvals=np.arange(x[0], x[-1] + 1e-9, DTICK[var]), range=[x[0], x[-1] * 1.01])
+            fig.update_layout(title=dict(text=ROTULOS[var], font=dict(family=FONTE_TITULO, size=17), x=0, y=.97))
+            col.plotly_chart(fig, width="stretch", config=CONFIG)
+            graus = [f"<b>{br(g, 2)}</b> {NOMES[t]}" for t, g in res["mu"][var].items() if g > 0]
+            col.markdown(f'<p class="nota">{br(v, 0)} {UNIDADES[var]}: ' + ", ".join(graus) + "</p>", unsafe_allow_html=True)
+
+    with aba2:
+        st.markdown('<p class="nota">A força de cada regra vem dos operadores E = mínimo, OU = máximo e NÃO = 1 − μ. '
+                    'Regras com força zero não participam da decisão.</p>', unsafe_allow_html=True)
+        linhas = []
+        for d in sorted(res["disparos"], key=lambda d: -d["forca"]):
+            on = d["forca"] > 1e-9
+            texto = d["texto"].split("  [")[0]
+            cons = f"tempo {NOMES[d['cons']['tempo']]}, vazão {NOMES[d['cons']['vazao']]}"
+            linhas.append(f"""<div class="regra{'' if on else ' inativa'}">
+              <div class="id">{d['id']}</div>
+              <div class="txt">{texto}<br><span>{cons}</span></div>
+              <div><div class="barra"><i style="width:{d['forca'] * 100:.0f}%"></i></div><div class="forca">{br(d['forca'], 2)}</div></div>
+            </div>""")
+        st.markdown("".join(linhas), unsafe_allow_html=True)
+
+    with aba3:
+        st.markdown('<p class="nota">Cada regra corta o termo de saída na altura da sua força. Os cortes são somados pelo máximo, '
+                    'e o centroide dessa área é o valor enviado à bomba.</p>', unsafe_allow_html=True)
+        cols = st.columns(2)
+        for col, s in zip(cols, fz.SAIDAS):
+            o = res["saida"][s]; x = fz.UNIVERSOS[s]
+            fig = base_fig(300)
+            for i, t in enumerate(fz.TERMOS[s]):
+                fig.add_trace(go.Scatter(x=x, y=fz.curva(s, t), mode="lines", name=NOMES[t],
+                                         line=dict(color=CORES_TERMOS[i], width=1.3, dash="dot"),
+                                         hovertemplate=f"{NOMES[t]}<extra></extra>"))
+            fig.add_trace(go.Scatter(x=x, y=o["agregado"], fill="tozeroy", mode="lines", name="área agregada",
+                                     line=dict(color=AGUA, width=2), fillcolor=rgba(AGUA, .3),
+                                     hovertemplate="%{y:.2f}<extra></extra>"))
+            fig.add_vline(x=o["centroide"], line=dict(color=ARGILA, width=2.4),
+                          annotation_text=f"centroide {br(o['centroide'])}", annotation_position="bottom right", annotation_y=0.55,
+                          annotation_font=dict(color=ARGILA, size=13))
+            nomear_termos(fig, s, CORES_TERMOS)
+            fig.update_xaxes(tickvals=np.arange(x[0], x[-1] + 1e-9, DTICK[s]), range=[x[0], x[-1] * 1.01])
+            fig.update_layout(title=dict(text=f"{ROTULOS[s]} ({UNIDADES[s]})", font=dict(family=FONTE_TITULO, size=17), x=0, y=.97))
+            col.plotly_chart(fig, width="stretch", config=CONFIG)
+            if o["valor"] == 0 and o["centroide"] > 0:
+                col.markdown(f'<p class="nota">O centroide ({br(o["centroide"])}) fica abaixo da zona morta '
+                             f'({br(fz.ZONA_MORTA[s])} {UNIDADES[s]}), então a bomba não liga.</p>', unsafe_allow_html=True)
+
+    with aba4:
+        saida = st.radio("Saída", ["tempo", "vazao"], format_func=lambda s: ROTULOS[s], horizontal=True)
+        st.markdown(f'<p class="nota">Decisão para todas as combinações de umidade e luz, com a temperatura fixa em '
+                    f'{st.session_state["temperatura"]} °C. O ponto marca a leitura atual.</p>', unsafe_allow_html=True)
+
+        @st.cache_data(show_spinner="Calculando a superfície…")
+        def malha(temp, s):
+            us, ss = np.arange(0, 101, 4), np.arange(0, 1001, 40)
+            Z = np.array([[fz.inferir(u, temp, l)["saida"][s]["valor"] for u in us] for l in ss])
+            return us, ss, Z
+
+        us, ss, Z = malha(st.session_state["temperatura"], saida)
+        fig = go.Figure(go.Surface(x=us, y=ss, z=Z, colorscale=[[0, NOITE], [.45, AGUA], [1, SOL]], showscale=False,
+                                   hovertemplate="umidade %{x}%<br>LDR %{y}<br>%{z:.1f}<extra></extra>"))
+        fig.add_trace(go.Scatter3d(x=[res["entradas"]["umidade"]], y=[luz], z=[res["saida"][saida]["valor"]],
+                                   mode="markers", marker=dict(size=7, color=ARGILA), hoverinfo="skip"))
+        fig.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                          font=dict(family="Atkinson Hyperlegible, sans-serif", color=MUSGO),
+                          scene=dict(xaxis_title="umidade (%)", yaxis_title="LDR", zaxis_title=f"{ROTULOS[saida]} ({UNIDADES[saida]})",
+                                     camera=dict(eye=dict(x=1.6, y=-1.5, z=0.9))))
+        st.plotly_chart(fig, width="stretch", config=CONFIG)
+
+
+navegacao = st.navigation([
+    st.Page(pagina_controlador, title="Controlador fuzzy", icon=":material/tune:", default=True),
+    st.Page(pagina_fazenda, title="Fazenda", icon=":material/agriculture:"),
+])
+navegacao.run()
