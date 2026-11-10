@@ -1,0 +1,7 @@
+numpy
+scipy
+matplotlib
+scikit-fuzzy
+streamlit
+packaging
+plotly
